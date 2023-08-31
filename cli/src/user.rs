@@ -390,8 +390,17 @@ impl User {
                     return Err("error".to_string());
                 }
             };
+
+            let processed_message_credential: Credential = processed_message.credential().clone();
+            
             match processed_message.into_content() {
                 ProcessedMessageContent::ApplicationMessage(application_message) => {
+
+                    match self.contacts.get(processed_message_credential.identity()) {
+                        Some(c) => log::debug!("SENDER ----------------> {:?}", c.username),
+                        None => panic!("There's a member in the group we don't know."),
+                    };
+
                     let application_message =
                         String::from_utf8(application_message.into_bytes()).unwrap();
                     if group_name.is_none() || group_name.clone().unwrap() == group.group_name {
