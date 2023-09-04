@@ -7,10 +7,12 @@ use termion::input::TermRead;
 
 mod backend;
 mod conversation;
+mod file_helpers;
 mod identity;
 mod networking;
 mod openmls_rust_persistent_crypto;
 mod persistent_key_store;
+mod serialize_any_hashmap;
 mod user;
 
 const HELP: &str = "
@@ -139,7 +141,6 @@ fn main() {
         // Save the current client state.
         if op == "save" {
             if let Some(client) = &mut client {
-                // client.create_kp().unwrap();
                 client.save();
                 let name = &client.username;
                 stdout
@@ -156,7 +157,6 @@ fn main() {
         // Enable automatic saving of the client state.
         if op == "autosave" {
             if let Some(client) = &mut client {
-                // client.create_kp().unwrap();
                 client.enable_auto_save();
                 let name = &client.username;
                 stdout

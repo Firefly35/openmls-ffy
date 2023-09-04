@@ -3,17 +3,17 @@ use std::collections::HashSet;
 use std::fs::File;
 use std::io::{BufReader, BufWriter};
 use std::path::PathBuf;
-use std::{cell::RefCell, collections::HashMap, env, str};
+use std::{cell::RefCell, collections::HashMap, str};
 
 use ds_lib::{ClientKeyPackages, GroupMessage};
 use openmls::prelude::*;
 use openmls_traits::OpenMlsProvider;
-use serde_json_any_key::*;
 use tls_codec::TlsByteVecU8;
 
 use super::{
-    backend::Backend, conversation::Conversation, conversation::ConversationMessage, identity::Identity,
-    openmls_rust_persistent_crypto::OpenMlsRustPersistentCrypto,
+    backend::Backend, conversation::Conversation, conversation::ConversationMessage, file_helpers,
+    identity::Identity, openmls_rust_persistent_crypto::OpenMlsRustPersistentCrypto,
+    serialize_any_hashmap,
 };
 
 const CIPHERSUITE: Ciphersuite = Ciphersuite::MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519;
@@ -34,7 +34,10 @@ pub struct Group {
 #[derive(serde::Serialize, serde::Deserialize)]
 pub struct User {
     pub(crate) username: String,
-    #[serde(with = "any_key_map")]
+    #[serde(
+        serialize_with = "serialize_any_hashmap::serialize_hashmap",
+        deserialize_with = "serialize_any_hashmap::deserialize_hashmap"
+    )]
     pub(crate) contacts: HashMap<Vec<u8>, Contact>,
     #[serde(skip)]
     pub(crate) groups: RefCell<HashMap<String, Group>>,
@@ -46,7 +49,6 @@ pub struct User {
     crypto: OpenMlsRustPersistentCrypto,
     #[serde(skip)]
     password: Option<String>,
-    #[serde(skip)]
     autosave_enabled: bool,
 }
 
@@ -75,10 +77,7 @@ impl User {
     }
 
     fn get_file_path(user_name: &String) -> PathBuf {
-        let output_file_name = "openmls_cli_".to_owned() + user_name.as_str() + ".json";
-        let tmp_folder = env::temp_dir();
-        let ks_path = tmp_folder.join(output_file_name);
-        return ks_path;
+        return file_helpers::get_file_path(&("openmls_cli_".to_owned() + user_name + ".json"));
     }
 
     fn ciphered_load(mut input_file: &File, password: &String) -> Result<Self, String> {
@@ -97,7 +96,7 @@ impl User {
         };
     }
 
-    fn unciphered_load(input_file: &File) -> Result<Self, String> {
+    fn load_from_file(input_file: &File) -> Result<Self, String> {
         // Prepare file reader.
         let reader = BufReader::new(input_file);
 
@@ -118,7 +117,7 @@ impl User {
             }
             Ok(input_file) => {
                 let user_result = match &password {
-                    None => User::unciphered_load(&input_file),
+                    None => User::load_from_file(&input_file),
                     Some(p) => User::ciphered_load(&input_file, &p),
                 };
 
@@ -160,7 +159,7 @@ impl User {
         }
     }
 
-    fn unciphered_save(&self, output_file: &File) {
+    fn save_to_file(&self, output_file: &File) {
         let writer = BufWriter::new(output_file);
         match serde_json::to_writer_pretty(writer, &self) {
             Ok(()) => log::info!("User serialized"),
@@ -184,7 +183,7 @@ impl User {
                 }
 
                 match &self.password {
-                    None => self.unciphered_save(&output_file),
+                    None => self.save_to_file(&output_file),
                     Some(p) => self.ciphered_save(&output_file, &p),
                 }
 
@@ -300,11 +299,18 @@ impl User {
     }
 
     /// Return the last 100 messages sent to the group.
-    pub fn read_msgs(&self, group_name: String) -> Result<Option<Vec<ConversationMessage>>, String> {
+    pub fn read_msgs(
+        &self,
+        group_name: String,
+    ) -> Result<Option<Vec<ConversationMessage>>, String> {
         let groups = self.groups.borrow();
         groups.get(&group_name).map_or_else(
             || Err("Unknown group".to_string()),
-            |g| Ok(g.conversation.get(100).map(|messages: &[crate::conversation::ConversationMessage]| messages.to_vec())),
+            |g| {
+                Ok(g.conversation
+                    .get(100)
+                    .map(|messages: &[crate::conversation::ConversationMessage]| messages.to_vec()))
+            },
         )
     }
 
@@ -355,7 +361,10 @@ impl User {
     /// Update the user. This involves:
     /// * retrieving all new messages from the server
     /// * update the contacts with all other clients known to the server
-    pub fn update(&mut self, group_name: Option<String>) -> Result<Vec<ConversationMessage>, String> {
+    pub fn update(
+        &mut self,
+        group_name: Option<String>,
+    ) -> Result<Vec<ConversationMessage>, String> {
         log::debug!("Updating {} ...", self.username);
 
         let mut messages_out: Vec<ConversationMessage> = Vec::new();
@@ -392,14 +401,20 @@ impl User {
             };
 
             let processed_message_credential: Credential = processed_message.credential().clone();
-            
+
             match processed_message.into_content() {
                 ProcessedMessageContent::ApplicationMessage(application_message) => {
-                    let sender_name = match self.contacts.get(processed_message_credential.identity()) {
-                        Some(c) => &c.username,
-                        None => panic!("There's a member in the group we don't know."),
-                    };
-                    let conversation_message = ConversationMessage::new(String::from_utf8(application_message.into_bytes()).unwrap().clone(), sender_name.to_string());    
+                    let sender_name =
+                        match self.contacts.get(processed_message_credential.identity()) {
+                            Some(c) => &c.username,
+                            None => panic!("There's a member in the group we don't know."),
+                        };
+                    let conversation_message = ConversationMessage::new(
+                        String::from_utf8(application_message.into_bytes())
+                            .unwrap()
+                            .clone(),
+                        sender_name.to_string(),
+                    );
                     if group_name.is_none() || group_name.clone().unwrap() == group.group_name {
                         messages_out.push(conversation_message.clone());
                     }
@@ -560,47 +575,47 @@ impl User {
         // Reclaim a key package from the server
         let joiner_key_package = self.backend.consume_key_package(&contact.id).unwrap();
 
-        {
-            // Build a proposal with this key package and do the MLS bits.
-            let mut groups = self.groups.borrow_mut();
-            let group = match groups.get_mut(&group_name) {
-                Some(g) => g,
-                None => return Err(format!("No group with name {group_name} known.")),
-            };
+        // Build a proposal with this key package and do the MLS bits.
+        let mut groups = self.groups.borrow_mut();
+        let group = match groups.get_mut(&group_name) {
+            Some(g) => g,
+            None => return Err(format!("No group with name {group_name} known.")),
+        };
 
-            let (out_messages, welcome, _group_info) = group
-                .mls_group
-                .borrow_mut()
-                .add_members(
-                    &self.crypto,
-                    &self.identity.borrow().signer,
-                    &[joiner_key_package.into()],
-                )
-                .map_err(|e| format!("Failed to add member to group - {e}"))?;
+        let (out_messages, welcome, _group_info) = group
+            .mls_group
+            .borrow_mut()
+            .add_members(
+                &self.crypto,
+                &self.identity.borrow().signer,
+                &[joiner_key_package.into()],
+            )
+            .map_err(|e| format!("Failed to add member to group - {e}"))?;
 
-            /* First, send the MlsMessage commit to the group.
-            This must be done before the member invitation is locally committed.
-            It avoids the invited member to receive the commit message (which is in the previous group epoch).*/
-            log::trace!("Sending commit");
-            let group = groups.get_mut(&group_name).unwrap(); // XXX: not cool.
-            let group_recipients = self.recipients(group);
+        /* First, send the MlsMessage commit to the group.
+        This must be done before the member invitation is locally committed.
+        It avoids the invited member to receive the commit message (which is in the previous group epoch).*/
+        log::trace!("Sending commit");
+        let group = groups.get_mut(&group_name).unwrap(); // XXX: not cool.
+        let group_recipients = self.recipients(group);
 
-            let msg = GroupMessage::new(out_messages.into(), &group_recipients);
-            self.backend.send_msg(&msg)?;
+        let msg = GroupMessage::new(out_messages.into(), &group_recipients);
+        self.backend.send_msg(&msg)?;
 
-            // Second, process the invitation on our end.
-            group
-                .mls_group
-                .borrow_mut()
-                .merge_pending_commit(&self.crypto)
-                .expect("error merging pending commit");
+        // Second, process the invitation on our end.
+        group
+            .mls_group
+            .borrow_mut()
+            .merge_pending_commit(&self.crypto)
+            .expect("error merging pending commit");
 
-            // Finally, send Welcome to the joiner.
-            log::trace!("Sending welcome");
-            self.backend
-                .send_welcome(&welcome)
-                .expect("Error sending Welcome message");
-        }
+        // Finally, send Welcome to the joiner.
+        log::trace!("Sending welcome");
+        self.backend
+            .send_welcome(&welcome)
+            .expect("Error sending Welcome message");
+
+        drop(groups);
 
         self.autosave();
 
@@ -610,42 +625,43 @@ impl User {
     /// Remove user with the given name from the group.
     pub fn remove(&mut self, name: String, group_name: String) -> Result<(), String> {
         // Get the group ID
-        {
-            let mut groups = self.groups.borrow_mut();
-            let group = match groups.get_mut(&group_name) {
-                Some(g) => g,
-                None => return Err(format!("No group with name {group_name} known.")),
-            };
 
-            // Get the client leaf index
+        let mut groups = self.groups.borrow_mut();
+        let group = match groups.get_mut(&group_name) {
+            Some(g) => g,
+            None => return Err(format!("No group with name {group_name} known.")),
+        };
 
-            let leaf_index = match self.find_member_index(name, group) {
-                Ok(l) => l,
-                Err(e) => return Err(e),
-            };
+        // Get the client leaf index
 
-            // Remove operation on the mls group
-            let (remove_message, _welcome, _group_info) = group
-                .mls_group
-                .borrow_mut()
-                .remove_members(&self.crypto, &self.identity.borrow().signer, &[leaf_index])
-                .map_err(|e| format!("Failed to add member to group - {e}"))?;
+        let leaf_index = match self.find_member_index(name, group) {
+            Ok(l) => l,
+            Err(e) => return Err(e),
+        };
 
-            // First, send the MlsMessage remove commit to the group.
-            log::trace!("Sending commit");
-            let group = groups.get_mut(&group_name).unwrap(); // XXX: not cool.
-            let group_recipients = self.recipients(group);
+        // Remove operation on the mls group
+        let (remove_message, _welcome, _group_info) = group
+            .mls_group
+            .borrow_mut()
+            .remove_members(&self.crypto, &self.identity.borrow().signer, &[leaf_index])
+            .map_err(|e| format!("Failed to add member to group - {e}"))?;
 
-            let msg = GroupMessage::new(remove_message.into(), &group_recipients);
-            self.backend.send_msg(&msg)?;
+        // First, send the MlsMessage remove commit to the group.
+        log::trace!("Sending commit");
+        let group = groups.get_mut(&group_name).unwrap(); // XXX: not cool.
+        let group_recipients = self.recipients(group);
 
-            // Second, process the removal on our end.
-            group
-                .mls_group
-                .borrow_mut()
-                .merge_pending_commit(&self.crypto)
-                .expect("error merging pending commit");
-        }
+        let msg = GroupMessage::new(remove_message.into(), &group_recipients);
+        self.backend.send_msg(&msg)?;
+
+        // Second, process the removal on our end.
+        group
+            .mls_group
+            .borrow_mut()
+            .merge_pending_commit(&self.crypto)
+            .expect("error merging pending commit");
+
+        drop(groups);
 
         self.autosave();
 

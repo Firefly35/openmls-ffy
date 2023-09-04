@@ -3,12 +3,13 @@ use openmls_traits::key_store::{MlsEntity, OpenMlsKeyStore};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::HashMap,
-    env,
     fs::File,
     io::{BufReader, BufWriter},
     path::PathBuf,
     sync::RwLock,
 };
+
+use super::file_helpers;
 
 #[derive(Debug, Default)]
 pub struct PersistentKeyStore {
@@ -68,10 +69,7 @@ impl OpenMlsKeyStore for PersistentKeyStore {
 
 impl PersistentKeyStore {
     fn get_file_path(user_name: &String) -> PathBuf {
-        let output_file_name = "openmls_cli_".to_owned() + user_name.as_str() + "_ks.json";
-        let tmp_folder = env::temp_dir();
-        let ks_path = tmp_folder.join(output_file_name);
-        return ks_path;
+        return file_helpers::get_file_path(&("openmls_cli_".to_owned() + user_name + "_ks.json"));
     }
 
     fn ciphered_save(&self, mut output_file: &File, password: String) -> Result<(), String> {
@@ -92,7 +90,7 @@ impl PersistentKeyStore {
         }
     }
 
-    fn unciphered_save(&self, output_file: &File) -> Result<(), String> {
+    fn save_to_file(&self, output_file: &File) -> Result<(), String> {
         let writer = BufWriter::new(output_file);
 
         let mut ser_ks = SerializableKeyStore::default();
@@ -113,7 +111,7 @@ impl PersistentKeyStore {
 
         match File::create(ks_output_path) {
             Ok(output_file) => match password {
-                None => self.unciphered_save(&output_file),
+                None => self.save_to_file(&output_file),
                 Some(p) => self.ciphered_save(&output_file, p),
             },
             Err(e) => Err(e.to_string()),
@@ -143,7 +141,7 @@ impl PersistentKeyStore {
         }
     }
 
-    fn unciphered_load(&mut self, input_file: &File) -> Result<(), String> {
+    fn load_from_file(&mut self, input_file: &File) -> Result<(), String> {
         // Prepare file reader.
         let reader = BufReader::new(input_file);
 
@@ -165,7 +163,7 @@ impl PersistentKeyStore {
 
         match File::open(ks_input_path) {
             Ok(input_file) => match password {
-                None => self.unciphered_load(&input_file),
+                None => self.load_from_file(&input_file),
                 Some(p) => self.ciphered_load(&input_file, p),
             },
             Err(e) => Err(e.to_string()),

@@ -34,9 +34,6 @@ impl Conversation {
 
 impl ConversationMessage {
     pub fn new(message: String, author: String) -> Self {
-        Self {
-            author,
-            message,
-        }
+        Self { author, message }
     }
 }
