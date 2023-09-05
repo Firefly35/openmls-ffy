@@ -69,7 +69,7 @@ impl OpenMlsKeyStore for PersistentKeyStore {
 
 impl PersistentKeyStore {
     fn get_file_path(user_name: &String) -> PathBuf {
-        return file_helpers::get_file_path(&("openmls_cli_".to_owned() + user_name + "_ks.json"));
+        file_helpers::get_file_path(&("openmls_cli_".to_owned() + user_name + "_ks.json"))
     }
 
     fn ciphered_save(&self, mut output_file: &File, password: String) -> Result<(), String> {
@@ -174,10 +174,6 @@ impl PersistentKeyStore {
 /// Errors thrown by the key store.
 #[derive(thiserror::Error, Debug, Copy, Clone, PartialEq, Eq)]
 pub enum PersistentKeyStoreError {
-    #[error("The key store does not allow storing serialized values.")]
-    UnsupportedValueTypeBytes,
-    #[error("Updating is not supported by this key store.")]
-    UnsupportedMethod,
     #[error("Error serializing value.")]
     SerializationError,
 }

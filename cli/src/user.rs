@@ -77,7 +77,7 @@ impl User {
     }
 
     fn get_file_path(user_name: &String) -> PathBuf {
-        return file_helpers::get_file_path(&("openmls_cli_".to_owned() + user_name + ".json"));
+        file_helpers::get_file_path(&("openmls_cli_".to_owned() + user_name + ".json"))
     }
 
     fn ciphered_load(mut input_file: &File, password: &String) -> Result<Self, String> {
